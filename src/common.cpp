@@ -4,27 +4,36 @@
  * Marshall Whittaker / oxagast
  */
 
-//    __ _  _  __   ___  __  ____ ____ 
+//    __ _  _  __   ___  __  ____ ____
 //   /  ( \/ )/ _\ / __)/ _\/ ___(_  _)
-//  (  O )  (/    ( (_ /    \___ \ )(  
+//  (  O )  (/    ( (_ /    \___ \ )(
 //   \__(_/\_\_/\_/\___\_/\_(____/(__)
 
+#ifdef __unix
+#include "src/version.h"
+#endif
+#ifdef _WIN32
+#include "version.h"
+#endif
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <random>
 #include <regex>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <signal.h>
 
 #define READ 0
 #define WRITE 1
 
+std::string make_garbage(int trash, int buf, std::string opt_other_str,
+                         bool is_other, bool never_rand);
+std::string trash_generator(int trash, int buf, std::string user_junk,
+                            std::string opt_other_str, bool never_rand);
 bool match_seg(int buf_size, std::vector<std::string> opts,
                std::vector<std::string> spec_env, std::string path_str,
                std::string strip_shell, bool rand_all, bool write_to_file,
@@ -34,11 +43,13 @@ bool match_seg(int buf_size, std::vector<std::string> opts,
                std::string junk_file_of_args, std::string always_arg_before,
                std::string always_arg_after, bool never_rand,
                std::string run_command, std::string fault_code, bool single_try,
-               bool percent_sign, bool verbose, bool debug, std::string ver);
+               bool percent_sign, int static_args, bool, bool keep_going,
+               std::string before_command, bool verbose, bool debug);
 void help_me(std::string mr_me);
 std::vector<std::string> get_flags_man(std::string man_page,
                                        std::string man_loc, bool verbose,
                                        bool debug, bool dump_opts);
+int rand_me_plz(int rand_from, int rand_to);
 
 std::string remove_chars(const std::string &source, const std::string &chars) {
   /* initialize an empty removal string */
@@ -56,11 +67,23 @@ std::string remove_chars(const std::string &source, const std::string &chars) {
       result += source[i];
     }
   }
-  return(result);
+  return (result);
 }
 
-int toint(std::string ints) {
-  return atoi(ints.c_str()); // for compatability with cygwin and mingw
+int toint(std::string ints, std::string my_prog) {
+  std::istringstream b_size(ints);
+  int is_int_b_s;
+  if (!(b_size >> is_int_b_s)) {
+    help_me(my_prog);
+  }
+  char buf_char_maybe_b_s;
+  if (b_size >> buf_char_maybe_b_s) {
+    help_me(my_prog);
+  } else {
+    /* for compatibility with cygwin */
+    return atoi(ints.c_str());
+  }
+  return (0);
 }
 
 bool file_exists(const std::string &filen) {
@@ -69,41 +92,19 @@ bool file_exists(const std::string &filen) {
   return (stat(filen.c_str(), &buf) == 0);
 }
 
-int rand_me_plz(int rand_from, int rand_to) {
-  /* initialize and seed the random device */
-  std::random_device rd;
-  std::default_random_engine generator(rd());
-  /* get a random number from-to */
-  std::uniform_int_distribution<int> distribution(rand_from, rand_to);
-  /* bind it so we can rerun multiple times for
-   * different results
-   */
-  auto roll = std::bind(distribution, generator);
-  return (roll());
-}
-
-char fortune_cookie() {
-  /* because fortune cookies taste good */
-  char chr;
-  /* all the characters that make up hex */
-  const char *hex_digits = "0123456789ABCDEF";
-  int i;
-  for (i = 0; i < 1; i++) {
-      /* now we just get two random hex characters and
-       * return them to the routine
-       */
-    chr = hex_digits[(rand_me_plz(0, 255))];
-  }
-  return (chr);
-}
-
 int reaper(int grim, int t_timeout) {
+#ifdef __linux
   /* run the timer and after the timeout we'll run
    * SIGKILL on it (kill -9 equivilant on linux)
    */
   sleep(t_timeout);
   kill(grim, 9);
   return (0);
+#elif _WIN32
+/* windows doesn't support kill 9 */
+#else
+  return (0);
+#endif
 }
 
 std::vector<std::string> get_flags_template(std::string filename, bool verbose,
@@ -124,15 +125,14 @@ std::vector<std::string> get_flags_template(std::string filename, bool verbose,
     /* this is incase they supplied a file that wasn't
      * available for some reason
      */
-    std::cerr << "Could not open template file..."
-              << std::endl;
+    std::cerr << "Could not open template file..." << std::endl;
     exit(1);
   }
   return (opt_vec); // return the vector with the options
 }
 
-std::vector<std::string> get_other(std::string filename,
-                                   bool verbose, bool debug) {
+std::vector<std::string> get_other(std::string filename, bool verbose,
+                                   bool debug) {
   /* this is all pretty much the same as above */
   std::vector<std::string> other_vec;
   std::string line;
@@ -149,167 +149,6 @@ std::vector<std::string> get_other(std::string filename,
   return (other_vec);
 }
 
-std::string trash_generator(int trash, int buf, std::string user_junk,
-                            std::string opt_other_str, bool never_rand) {
-  /* this is the trash generator, here we generate
-   * bad input, some of it random, some of it precrafted
-   * and some of it user supplied to try to crash the
-   * program at hand
-   */
-  std::string junk = "";
-  std::string hex_stuff;
-  int trash_num;
-  if (trash == 0) {
-    for (trash_num = 0; trash_num < buf; trash_num++) {
-      junk = "A" + junk;
-    }
-  }
-  if (trash == 1) {
-    junk = "-1";
-  }
-  if (trash == 2) {
-    junk = "1";
-  }
-  if (trash == 3) {
-    junk = "0";
-  }
-  if (trash == 4) {
-    junk = "2";
-  }
-  if (trash == 5) {
-    int hex_null_i = 0x00;
-    std::stringstream hex_null_ss;
-    hex_null_ss << hex_null_i;
-    junk = hex_null_ss.str();
-  }
-  if (trash == 6) {
-    for (trash_num = 0; trash_num < buf / 2; trash_num++) {
-      junk = "\%s" + junk;
-    }
-  }
-  if (trash == 7) {
-    for (trash_num = 0; trash_num < buf / 2; trash_num++) {
-      junk = "\%n" + junk;
-    }
-  }
-  if (never_rand == false) {
-    if (trash == 8) {
-      for (trash_num = 0; trash_num < buf; trash_num++) {
-        junk = junk += fortune_cookie();
-      }
-    }
-  }
-  if (trash == 9) { // front
-    for (trash_num = 0; trash_num < buf; trash_num++) {
-      junk = "A" + junk;
-    }
-    junk = user_junk + junk;
-    if (buf - user_junk.length() < junk.size())
-      junk = junk.substr(0, buf);
-    else
-      return ("OOR");
-  }
-  if (trash == 10) {
-    for (trash_num = 0; trash_num < buf / 2; trash_num++) {
-      junk = "\%s" + junk;
-    }
-    junk = user_junk + junk;
-    if (buf - user_junk.length() < junk.size())
-      junk = junk.substr(0, buf);
-    else
-      return ("OOR");
-  }
-  if (never_rand == false) {
-    if (trash == 11) {
-      for (trash_num = 0; trash_num < buf; trash_num++) {
-        junk = junk += fortune_cookie();
-      }
-      junk = user_junk + junk;
-      if (buf - user_junk.length() < junk.size())
-        junk = junk.substr(0, buf);
-      else
-        return ("OOR");
-    }
-  }
-  if (trash == 12) {
-    for (trash_num = 0; trash_num < buf; trash_num++) {
-      junk = "A" + junk;
-    }
-    junk = junk + user_junk;
-    if (buf - user_junk.length() < junk.size())
-      junk = junk.substr(junk.length() - buf);
-    else
-      return ("OOR");
-  }
-  if (trash == 13) {
-    for (trash_num = 0; trash_num < buf / 2; trash_num++) {
-      junk = "\%s" + junk;
-    }
-    junk = junk + user_junk;
-    if (buf - user_junk.length() < junk.size())
-      junk = junk.substr(junk.length() - buf);
-    else
-      return ("OOR");
-  }
-  if (never_rand == false) {
-    if (trash == 14) {
-      for (trash_num = 0; trash_num < buf; trash_num++) {
-        junk = junk += fortune_cookie();
-      }
-      junk = junk + user_junk;
-      if (buf - user_junk.length() < junk.size())
-        junk = junk.substr(junk.length() - buf);
-      else
-        return ("OOR");
-    }
-  }
-  if (trash == 15) {
-    for (trash_num = 0; trash_num < buf / 2; trash_num++) {
-      junk = "\%n" + junk;
-    }
-    junk = junk + user_junk;
-    if (buf - user_junk.length() < junk.size())
-      junk = junk.substr(junk.length() - buf);
-    else
-      return ("OOR");
-  }
-  if (trash == 16) {
-    junk = opt_other_str;
-  }
-  /* return the junk to put in between the args */
-  return (junk);
-}
-
-std::string make_garbage(int trash, int buf, std::string opt_other_str,
-                         bool is_other, bool never_rand) {
-  buf = buf - 1;
-  std::string all_junk;
-  if (is_other == true) {
-    if (isatty(STDIN_FILENO)) {
-      /* if it's a stdin then we'll call the tash generator */
-      std::string user_stuff = "";
-      all_junk = trash_generator(trash, buf, user_stuff, opt_other_str,
-                                 never_rand);
-    } else {
-      std::string user_stuff;
-      getline(std::cin, user_stuff);
-      all_junk =
-          trash_generator(trash, buf, user_stuff, opt_other_str, never_rand);
-    }
-  } else if (is_other == false) {
-    if (isatty(STDIN_FILENO)) {
-      std::string user_stuff = "";
-      all_junk = trash_generator(trash, buf, user_stuff, "", never_rand);
-    } else {
-      std::string user_stuff;
-      getline(std::cin, user_stuff);
-      all_junk = trash_generator(trash, buf, user_stuff, "", never_rand);
-    }
-  }
-  /* return all the junk the trash generator made */
-  return (all_junk);
-}
-
 void write_seg(std::string filename, std::string line) {
   /* this is just a simple file writing routine
    * used mostly for logging and writing the junk
@@ -324,6 +163,7 @@ void write_seg(std::string filename, std::string line) {
 void write_junk_file(std::string filename, std::vector<std::string> opt_other,
                      int buf_size, int rand_spec_one, int rand_spec_two,
                      bool never_rand, std::string other_sep, bool verbose) {
+  /* Cashhhhhhhhh me ousside howbow dat?? */
   /* if there is an old file we should remove it first */
   remove(filename.c_str());
   /* initialize our junk and write oscar to the file */
@@ -331,11 +171,10 @@ void write_junk_file(std::string filename, std::vector<std::string> opt_other,
   std::ofstream w_f;
   w_f.open(filename, std::ios::out | std::ios::app);
   for (int start_buf = 0; start_buf <= buf_size; start_buf++) {
-    std::string oscar = opt_other.at(
-        rand_me_plz(0, opt_other.size() - 1));
-    std::string trash = make_garbage(rand_me_plz(rand_spec_one, rand_spec_two),
-                                     rand_me_plz(1, buf_size), "", false,
-                                     never_rand);
+    std::string oscar = opt_other.at(rand_me_plz(0, opt_other.size() - 1));
+    std::string trash =
+        make_garbage(rand_me_plz(rand_spec_one, rand_spec_two),
+                     rand_me_plz(1, buf_size), "", false, never_rand);
     w_f << oscar;
     if (trash != "OOR") {
       w_f << trash;
